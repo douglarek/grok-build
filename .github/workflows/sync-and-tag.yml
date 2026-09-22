@@ -1,6 +1,6 @@
 name: "Sync Upstream, Auto Tag and Auto Vendor"
 
-on:
+'on':
   schedule:
     # Run every hour
     - cron: '0 * * * *'
@@ -78,14 +78,7 @@ jobs:
           cargo vendor vendor
 
           mkdir -p .cargo
-          cat >> .cargo/config.toml << 'EOF'
-
-[source.crates-io]
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
-EOF
+          printf '%s\n' '[source.crates-io]' 'replace-with = "vendored-sources"' '' '[source.vendored-sources]' 'directory = "vendor"' > .cargo/config.toml
 
           python3 -c '
           import re
@@ -97,8 +90,7 @@ EOF
                   base_url = url.split("?")[0].replace("git+", "")
                   rev_m = re.search(r"rev=([^&#]+)", url)
                   rev = rev_m.group(1) if rev_m else ""
-                  f.write(f"\n[source.\"{url}\"]\n")
-                  f.write(f"git = \"{base_url}\"\n")
+                  f.write(f"\n[source.\"{url}\"]\ngit = \"{base_url}\"\n")
                   if rev:
                       f.write(f"rev = \"{rev}\"\n")
                   f.write("replace-with = \"vendored-sources\"\n")

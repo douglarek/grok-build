@@ -1,4 +1,4 @@
-name: Sync Upstream & Auto Tag & Auto Vendor
+name: "Sync Upstream, Auto Tag and Auto Vendor"
 
 on:
   schedule:

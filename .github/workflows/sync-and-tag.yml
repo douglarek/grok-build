@@ -1,17 +1,22 @@
-name: Sync Upstream & Auto Tag
+name: Sync Upstream & Auto Tag & Auto Vendor
 
 on:
   schedule:
     # Run every hour
     - cron: '0 * * * *'
   workflow_dispatch:
+    inputs:
+      force_vendor:
+        description: 'Force re-generate and upload vendor.tar.zst to OBS'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
   sync-and-tag:
-    name: Sync Upstream & Auto Tag
+    name: Sync Upstream, Auto Tag & Vendor to OBS
     runs-on: ubuntu-latest
     steps:
       - name: Checkout ci-jobs branch
@@ -33,9 +38,9 @@ jobs:
           echo "=== Pushing updated main branch to origin ==="
           git push origin upstream/main:refs/heads/main
 
-      - name: Detect Version and Auto Tag
+      - name: Detect Version and Process Tags
+        id: check_version
         run: |
-          # Read version from crates/codegen/xai-grok-shell/Cargo.toml on upstream/main
           VERSION=$(git show upstream/main:crates/codegen/xai-grok-shell/Cargo.toml | grep -m1 '^version = ' | cut -d '"' -f 2)
           echo "Detected version from upstream Cargo.toml: '$VERSION'"
           if [ -z "$VERSION" ]; then
@@ -44,16 +49,74 @@ jobs:
           fi
 
           TAG="v${VERSION}"
-          echo "Target tag: $TAG"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
           git fetch origin --tags
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            EXISTING_COMMIT=$(git rev-parse "$TAG^{commit}")
-            UPSTREAM_COMMIT=$(git rev-parse "upstream/main^{commit}")
-            echo "Tag $TAG already exists pointing to $EXISTING_COMMIT (upstream/main is $UPSTREAM_COMMIT)."
+            echo "Tag $TAG already exists."
+            echo "new_tag=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Tag $TAG does not exist. Creating and pushing tag to origin..."
+            echo "Tag $TAG does not exist. Creating and pushing tag..."
             git tag -a "$TAG" upstream/main -m "Release $TAG (synced from xai-org/grok-build)"
             git push origin "$TAG"
-            echo "Successfully pushed tag $TAG!"
+            echo "new_tag=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Setup Rust toolchain
+        if: steps.check_version.outputs.new_tag == 'true' || inputs.force_vendor == true
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Vendor dependencies and Upload to OBS
+        if: steps.check_version.outputs.new_tag == 'true' || inputs.force_vendor == true
+        env:
+          OBS_USER: ${{ secrets.OBS_USER }}
+          OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
+          VERSION: ${{ steps.check_version.outputs.version }}
+        run: |
+          echo "=== Building vendor.tar.zst for version $VERSION ==="
+          git checkout "v${VERSION}"
+
+          cargo vendor vendor
+
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << 'EOF'
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
+EOF
+
+          python3 -c '
+          import re
+          with open("Cargo.lock") as f:
+              lock = f.read()
+          git_urls = sorted(set(re.findall(r"git\+https://[^\"#]+", lock)))
+          with open(".cargo/config.toml", "a") as f:
+              for url in git_urls:
+                  base_url = url.split("?")[0].replace("git+", "")
+                  rev_m = re.search(r"rev=([^&#]+)", url)
+                  rev = rev_m.group(1) if rev_m else ""
+                  f.write(f"\n[source.\"{url}\"]\n")
+                  f.write(f"git = \"{base_url}\"\n")
+                  if rev:
+                      f.write(f"rev = \"{rev}\"\n")
+                  f.write("replace-with = \"vendored-sources\"\n")
+          '
+
+          echo "=== Generated .cargo/config.toml ==="
+          tail -n 25 .cargo/config.toml
+
+          sudo apt-get update && sudo apt-get install -y zstd
+          tar -cf - .cargo/config.toml vendor | zstd -f -T0 -12 -o vendor.tar.zst
+
+          echo "Vendor archive size:"
+          ls -lh vendor.tar.zst
+
+          echo "=== Uploading vendor.tar.zst to OBS (home:douglarek:ai/grok-build) ==="
+          curl -f -u "${OBS_USER}:${OBS_PASSWORD}" -X PUT -T vendor.tar.zst \
+            "https://api.opensuse.org/source/home:douglarek:ai/grok-build/vendor.tar.zst?comment=Automated+vendor+update+for+v${VERSION}"
+
+          echo "=== Upload completed successfully! ==="

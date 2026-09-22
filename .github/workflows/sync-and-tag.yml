@@ -1,0 +1,59 @@
+name: Sync Upstream & Auto Tag
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-and-tag:
+    name: Sync Upstream & Auto Tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ci-jobs branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync upstream main branch
+        run: |
+          echo "=== Fetching from upstream (xai-org/grok-build) ==="
+          git remote add upstream https://github.com/xai-org/grok-build.git || true
+          git fetch upstream main
+
+          echo "=== Pushing updated main branch to origin ==="
+          git push origin upstream/main:refs/heads/main
+
+      - name: Detect Version and Auto Tag
+        run: |
+          # Read version from crates/codegen/xai-grok-shell/Cargo.toml on upstream/main
+          VERSION=$(git show upstream/main:crates/codegen/xai-grok-shell/Cargo.toml | grep -m1 '^version = ' | cut -d '"' -f 2)
+          echo "Detected version from upstream Cargo.toml: '$VERSION'"
+          if [ -z "$VERSION" ]; then
+            echo "Error: Failed to parse version from Cargo.toml"
+            exit 1
+          fi
+
+          TAG="v${VERSION}"
+          echo "Target tag: $TAG"
+
+          git fetch origin --tags
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            EXISTING_COMMIT=$(git rev-parse "$TAG^{commit}")
+            UPSTREAM_COMMIT=$(git rev-parse "upstream/main^{commit}")
+            echo "Tag $TAG already exists pointing to $EXISTING_COMMIT (upstream/main is $UPSTREAM_COMMIT)."
+          else
+            echo "Tag $TAG does not exist. Creating and pushing tag to origin..."
+            git tag -a "$TAG" upstream/main -m "Release $TAG (synced from xai-org/grok-build)"
+            git push origin "$TAG"
+            echo "Successfully pushed tag $TAG!"
+          fi

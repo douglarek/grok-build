@@ -4,6 +4,9 @@ on:
   schedule:
     # Run every hour
     - cron: '0 * * * *'
+  push:
+    branches:
+      - ci-jobs
   workflow_dispatch:
 
 permissions:

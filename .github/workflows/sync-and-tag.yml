@@ -105,8 +105,8 @@ jobs:
           echo "Vendor archive size:"
           ls -lh vendor.tar.zst
 
-          echo "=== Uploading vendor.tar.zst to OBS (home:douglarek:ai/grok-build) ==="
+          echo "=== Uploading vendor.tar.zst to OBS (home:douglarek/grok-build) ==="
           curl -f -u "${OBS_USER}:${OBS_PASSWORD}" -X PUT -T vendor.tar.zst \
-            "https://api.opensuse.org/source/home:douglarek:ai/grok-build/vendor.tar.zst?comment=Automated+vendor+update+for+v${VERSION}"
+            "https://api.opensuse.org/source/home:douglarek/grok-build/vendor.tar.zst?comment=Automated+vendor+update+for+v${VERSION}"
 
           echo "=== Upload completed successfully! ==="

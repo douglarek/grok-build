@@ -93,8 +93,20 @@ jobs:
           OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
           VERSION: ${{ steps.check_version.outputs.version }}
           COMMIT: ${{ steps.sync.outputs.commit }}
+          NEW_TAG: ${{ steps.check_version.outputs.new_tag }}
         run: |
           COMMIT="${COMMIT:-$(git rev-parse upstream/main)}"
+
+          if [ "$NEW_TAG" = "true" ]; then
+            echo "=== Updating committed OBS spec Version to $VERSION (new tag v$VERSION) ==="
+            curl -f -u "${OBS_USER}:${OBS_PASSWORD}" -o spec.tmp \
+              "https://api.opensuse.org/source/home:douglarek/grok-build/grok-build.spec"
+            sed -i "s/^Version:.*/Version:        ${VERSION}/" spec.tmp
+            grep -q "^Version:        ${VERSION}$" spec.tmp
+            curl -f -u "${OBS_USER}:${OBS_PASSWORD}" -X PUT -T spec.tmp \
+              "https://api.opensuse.org/source/home:douglarek/grok-build/grok-build.spec?comment=Set+Version+to+${VERSION}+(tag+v${VERSION})"
+            rm -f spec.tmp
+          fi
           echo "=== Building vendor.tar.zst from upstream commit ${COMMIT:0:12} (latest tag: v${VERSION}) ==="
           git checkout --detach upstream/main
 

@@ -8,6 +8,12 @@ name: "Sync Upstream, Auto Tag and Auto Vendor"
     branches:
       - ci-jobs
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Vendor and trigger OBS even if upstream main did not move"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -28,16 +34,31 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Sync upstream main branch
+        id: sync
         run: |
           echo "=== Fetching from upstream (xai-org/grok-build) ==="
           git remote add upstream https://github.com/xai-org/grok-build.git || true
           git fetch upstream main
+          git fetch origin main
+
+          BEFORE=$(git rev-parse origin/main)
+          AFTER=$(git rev-parse upstream/main)
+          echo "upstream main: ${BEFORE:0:12} -> ${AFTER:0:12}"
 
           echo "=== Pushing updated main branch to origin ==="
           git push origin upstream/main:refs/heads/main
 
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "Upstream main unchanged; nothing to sync."
+            echo "main_moved=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "main_moved=true" >> "$GITHUB_OUTPUT"
+            echo "commit=$AFTER" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Detect Version and Process Tags
         id: check_version
+        if: steps.sync.outputs.main_moved == 'true' || inputs.force == true
         run: |
           VERSION=$(git show upstream/main:crates/codegen/xai-grok-shell/Cargo.toml | grep -m1 '^version = ' | cut -d '"' -f 2)
           echo "Detected version from upstream Cargo.toml: '$VERSION'"
@@ -62,18 +83,20 @@ jobs:
           fi
 
       - name: Setup Rust toolchain
-        if: steps.check_version.outputs.new_tag == 'true'
+        if: steps.sync.outputs.main_moved == 'true' || inputs.force == true
         uses: dtolnay/rust-toolchain@stable
 
       - name: Vendor dependencies and Upload to OBS
-        if: steps.check_version.outputs.new_tag == 'true'
+        if: steps.sync.outputs.main_moved == 'true' || inputs.force == true
         env:
           OBS_USER: ${{ secrets.OBS_USER }}
           OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
           VERSION: ${{ steps.check_version.outputs.version }}
+          COMMIT: ${{ steps.sync.outputs.commit }}
         run: |
-          echo "=== Building vendor.tar.zst for version $VERSION ==="
-          git checkout "v${VERSION}"
+          COMMIT="${COMMIT:-$(git rev-parse upstream/main)}"
+          echo "=== Building vendor.tar.zst from upstream commit ${COMMIT:0:12} (latest tag: v${VERSION}) ==="
+          git checkout --detach upstream/main
 
           cargo vendor vendor
 
@@ -107,6 +130,14 @@ jobs:
 
           echo "=== Uploading vendor.tar.zst to OBS (home:douglarek/grok-build) ==="
           curl -f -u "${OBS_USER}:${OBS_PASSWORD}" -X PUT -T vendor.tar.zst \
-            "https://api.opensuse.org/source/home:douglarek/grok-build/vendor.tar.zst?comment=Automated+vendor+update+for+v${VERSION}"
+            "https://api.opensuse.org/source/home:douglarek/grok-build/vendor.tar.zst?comment=Automated+vendor+update+for+upstream+commit+${COMMIT:0:12}"
 
-          echo "=== Upload completed successfully! ==="
+          echo "=== Triggering OBS source service run ==="
+          curl -f -u "${OBS_USER}:${OBS_PASSWORD}" -X POST \
+            "https://api.opensuse.org/source/home:douglarek/grok-build?cmd=runservice&comment=Triggered+by+upstream+commit+${COMMIT:0:12}"
+
+          echo "=== Triggering OBS rebuild (all repositories) ==="
+          curl -f -u "${OBS_USER}:${OBS_PASSWORD}" -X POST \
+            "https://api.opensuse.org/build/home:douglarek?cmd=rebuild&package=grok-build&comment=Triggered+by+upstream+commit+${COMMIT:0:12}"
+
+          echo "=== All done ==="
